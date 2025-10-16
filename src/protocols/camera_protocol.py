@@ -13,6 +13,9 @@ from requests.auth import HTTPDigestAuth
 from abc import ABC, abstractmethod
 from typing import Dict, List, Union, Optional, Tuple
 import struct
+import asyncio
+import aiohttp
+from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
 
 class CameraProtocolInterface(ABC):
@@ -41,6 +44,17 @@ class CameraProtocolInterface(ABC):
     @abstractmethod
     def is_connected(self) -> bool:
         """Check if connection is active."""
+        pass
+    
+    @abstractmethod
+    async def set_camera_params_async(self, cam_id: int, venue_number: int, 
+                                    params_dict: Dict[str, Union[int, str]]) -> bool:
+        """Async version of set_camera_params."""
+        pass
+    
+    @abstractmethod
+    async def get_camera_params_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+        """Async version of get_camera_params."""
         pass
 
 
@@ -171,6 +185,124 @@ class CGIProtocol(CameraProtocolInterface):
         
         print(f"Failed to set camera parameters after {self.max_attempts} attempts")
         return False
+    
+    async def get_camera_params_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+        """
+        Get current camera parameters via CGI inquiry (async version).
+        
+        Args:
+            cam_id: Camera ID (1-6)
+            venue_number: Venue number (1-15)
+            
+        Returns:
+            Dictionary of camera parameters or None if failed
+        """
+        venue_number += 54
+        url = f'http://192.168.{venue_number}.5{cam_id}/command/inquiry.cgi?inqjs=imaging'
+        
+        timeout = ClientTimeout(total=self.timeout)
+        connector = TCPConnector(limit=10, limit_per_host=5)
+        
+        async with ClientSession(timeout=timeout, connector=connector) as session:
+            try:
+                async with session.get(url, auth=aiohttp.BasicAuth(self.username, self.password)) as response:
+                    if response.status != 200:
+                        print(f"Failed to get camera params. Status code: {response.status}")
+                        return None
+                    
+                    text = await response.text()
+                    
+                    # Parse response
+                    config_dict = {}
+                    lines = text.splitlines()
+                    for line in lines:
+                        if 'var ' in line and '=' in line:
+                            # Extract parameter name and value
+                            parts = line.split('=', 1)
+                            if len(parts) == 2:
+                                param_name = parts[0].replace('var ', '').replace('"', '').strip()
+                                param_value = parts[1].replace('"', '').replace(';', '').strip()
+                                config_dict[param_name] = param_value
+                    
+                    return config_dict
+                    
+            except aiohttp.ClientError as e:
+                print(f"Error getting camera params: {e}")
+                return None
+    
+    async def set_camera_params_async(self, cam_id: int, venue_number: int, params_dict: Dict[str, Union[int, str]]) -> bool:
+        """
+        Set camera parameters via CGI command (async version).
+        
+        Args:
+            cam_id: Camera ID (1-6)
+            venue_number: Venue number (1-15)
+            params_dict: Dictionary of parameters to set
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not params_dict:
+            return True
+        
+        venue_number += 54
+        params_string = "&".join(f"{k}={v}" for k, v in params_dict.items())
+        url = f'http://192.168.{venue_number}.5{cam_id}/command/imaging.cgi?{params_string}'
+        
+        timeout = ClientTimeout(total=self.timeout)
+        connector = TCPConnector(limit=10, limit_per_host=5)
+        
+        async with ClientSession(timeout=timeout, connector=connector) as session:
+            for attempt in range(self.max_attempts):
+                try:
+                    async with session.post(url, auth=aiohttp.BasicAuth(self.username, self.password)) as response:
+                        if response.status == 200:
+                            print(f"Successfully set camera parameters on attempt {attempt + 1}")
+                            return True
+                        else:
+                            print(f"Failed to set camera parameters on attempt {attempt + 1}. Status code: {response.status}")
+                            
+                except aiohttp.ClientError as e:
+                    print(f"Error setting camera params on attempt {attempt + 1}: {e}")
+                
+                if attempt < self.max_attempts - 1:
+                    await asyncio.sleep(self.retry_delay)
+            
+            print(f"Failed to set camera parameters after {self.max_attempts} attempts")
+            return False
+
+
+class VISCADatagramProtocol(asyncio.DatagramProtocol):
+    """Custom datagram protocol for handling VISCA over IP responses."""
+    
+    def __init__(self, visca_protocol):
+        self.visca_protocol = visca_protocol
+        self.transport = None
+        
+    def connection_made(self, transport):
+        """Called when connection is established."""
+        self.transport = transport
+        
+    def datagram_received(self, data, addr):
+        """Handle incoming VISCA responses."""
+        if len(data) > 8:
+            visca_payload = data[8:]
+            sequence_number = struct.unpack('>I', data[4:8])[0]
+            
+            # Resolve pending futures
+            if sequence_number in self.visca_protocol.command_futures:
+                future = self.visca_protocol.command_futures.pop(sequence_number)
+                if not future.done():
+                    future.set_result(visca_payload)
+    
+    def error_received(self, exc):
+        """Handle protocol errors."""
+        print(f"VISCA datagram protocol error: {exc}")
+    
+    def connection_lost(self, exc):
+        """Called when connection is lost."""
+        if exc:
+            print(f"VISCA datagram protocol connection lost: {exc}")
 
 
 class VISCAProtocol(CameraProtocolInterface):
@@ -210,6 +342,11 @@ class VISCAProtocol(CameraProtocolInterface):
         
         # VISCA command mappings
         self.command_map = self._initialize_command_map()
+        
+        # Async support
+        self.command_futures = {}  # Track pending commands by sequence number
+        self.datagram_protocol = None
+        self.transport = None
     
     def _build_visca_ip_packet(self, visca_payload: bytes) -> bytes:
         """
@@ -279,7 +416,7 @@ class VISCAProtocol(CameraProtocolInterface):
     
     def connect(self) -> bool:
         """
-        Establish UDP connection for VISCA protocol.
+        Establish UDP connection for VISCA protocol (sync version).
         Creates UDP socket for sending/receiving. Port is auto-assigned by OS.
         """
         try:
@@ -298,8 +435,29 @@ class VISCAProtocol(CameraProtocolInterface):
             print(f"VISCA: Failed to create socket: {e}")
             return False
     
+    async def connect_async(self) -> bool:
+        """
+        Establish async UDP connection for VISCA protocol.
+        Creates async datagram endpoint for sending/receiving.
+        """
+        try:
+            if self.transport is None:
+                loop = asyncio.get_event_loop()
+                self.datagram_protocol = VISCADatagramProtocol(self)
+                self.transport, self.datagram_protocol = await loop.create_datagram_endpoint(
+                    lambda: self.datagram_protocol,
+                    local_addr=('0.0.0.0', 0)  # Let OS assign port
+                )
+                self.connected = True
+                local_addr = self.transport.get_extra_info('sockname')
+                print(f"VISCA: Created async UDP endpoint (local port: {local_addr[1]}) for send+recv")
+            return True
+        except Exception as e:
+            print(f"VISCA: Failed to create async socket: {e}")
+            return False
+    
     def disconnect(self) -> bool:
-        """Close UDP connection."""
+        """Close UDP connection (sync version)."""
         try:
             if self.socket:
                 self.socket.close()
@@ -310,9 +468,22 @@ class VISCAProtocol(CameraProtocolInterface):
             print(f"Error closing VISCA socket: {e}")
             return False
     
+    async def disconnect_async(self) -> bool:
+        """Close async UDP connection."""
+        try:
+            if self.transport:
+                self.transport.close()
+                self.transport = None
+            self.datagram_protocol = None
+            self.connected = False
+            return True
+        except Exception as e:
+            print(f"Error closing VISCA async socket: {e}")
+            return False
+    
     def is_connected(self) -> bool:
         """Check if VISCA connection is active."""
-        return self.connected and self.socket is not None
+        return self.connected and (self.socket is not None or self.transport is not None)
     
     def _create_visca_packet(self, command: bytes, value: int = None) -> bytes:
         """
@@ -541,6 +712,230 @@ class VISCAProtocol(CameraProtocolInterface):
         print(f"VISCA: Set {success_count}/{total_params} parameters successfully on camera {cam_id}")
         
         # Return True if at least some parameters were set successfully (not requiring ALL)
+        return success_count > 0
+    
+    async def _send_visca_command_async(self, cam_id: int, venue_number: int, command: bytes) -> Optional[bytes]:
+        """
+        Send VISCA command with VISCA-IP header and receive response (async version).
+        
+        Args:
+            cam_id: Camera ID (1-6)
+            venue_number: Venue number (1-15)
+            command: VISCA payload (0x81...FF)
+            
+        Returns:
+            VISCA payload response (header stripped) or None if failed
+        """
+        if not self.is_connected():
+            print(f"VISCA not connected for camera {cam_id}")
+            return None
+        
+        venue_number += 54
+        camera_ip = f"192.168.{venue_number}.5{cam_id}"
+        
+        for attempt in range(self.max_attempts):
+            try:
+                # Build VISCA-IP packet (header + payload)
+                packet = self._build_visca_ip_packet(command)
+                
+                # Send packet
+                self.transport.sendto(packet, (camera_ip, self.port))
+                
+                # Wait for response with timeout
+                sequence_number = struct.unpack('>I', packet[4:8])[0]
+                future = asyncio.Future()
+                self.command_futures[sequence_number] = future
+                
+                try:
+                    response = await asyncio.wait_for(future, timeout=self.timeout)
+                    
+                    # Validate VISCA response
+                    if len(response) >= 3 and response[0] == self.reply_header:
+                        return response
+                    
+                except asyncio.TimeoutError:
+                    print(f"VISCA timeout for camera {cam_id} on attempt {attempt + 1}")
+                    self.command_futures.pop(sequence_number, None)
+                
+                # Pace between attempts
+                if attempt < self.max_attempts - 1:
+                    await asyncio.sleep(self.v_cycle)
+                
+            except Exception as e:
+                print(f"VISCA error for camera {cam_id}: {e}")
+                if attempt < self.max_attempts - 1:
+                    await asyncio.sleep(self.v_cycle)
+                else:
+                    return None
+        
+        return None
+    
+    async def _set_single_param_async(self, cam_id: int, venue_number: int, 
+                                    param_name: str, value: Union[int, str]) -> bool:
+        """Set a single parameter asynchronously."""
+        try:
+            # Convert value to integer
+            int_value = int(value)
+            
+            # Create command packet
+            command = self._create_visca_packet(
+                self.command_map[param_name]['set'], 
+                int_value
+            )
+            
+            print(f"VISCA: Setting {param_name}={int_value} on camera {cam_id}")
+            
+            # Send command and wait for response
+            response = await self._send_visca_command_async(cam_id, venue_number, command)
+            
+            if response and len(response) >= 3:
+                # For SET commands: expect ACK (0x90 0x4z FF) then Completion (0x90 0x5z FF)
+                if response[0] == 0x90 and (response[1] & 0xF0) == 0x40:  # Got ACK
+                    # Wait for Completion
+                    try:
+                        completion = await self._wait_for_completion_async()
+                        if completion and completion[0] == 0x90 and (completion[1] & 0xF0) == 0x50:
+                            print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
+                            return True
+                        else:
+                            print(f"VISCA: Unexpected completion for {param_name}: {completion.hex() if completion else 'None'}")
+                    except Exception as e:
+                        print(f"VISCA: No completion for {param_name}: {e}")
+                elif response[0] == 0x90 and (response[1] & 0xF0) == 0x50:  # Direct completion
+                    print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
+                    return True
+                else:
+                    print(f"VISCA: Failed to set {param_name} on camera {cam_id}, response: {response.hex()}")
+            else:
+                print(f"VISCA: No response for {param_name} on camera {cam_id}")
+            
+            return False
+            
+        except ValueError:
+            print(f"VISCA: Invalid value for {param_name}: {value}")
+            return False
+        except Exception as e:
+            print(f"VISCA: Error setting {param_name} on camera {cam_id}: {e}")
+            return False
+    
+    async def _wait_for_completion_async(self) -> Optional[bytes]:
+        """Wait for completion response asynchronously."""
+        try:
+            # Wait for next response in command_futures
+            if self.command_futures:
+                # Get the first pending future
+                sequence_number, future = next(iter(self.command_futures.items()))
+                completion = await asyncio.wait_for(future, timeout=self.timeout)
+                self.command_futures.pop(sequence_number, None)
+                return completion
+        except asyncio.TimeoutError:
+            pass
+        return None
+    
+    async def get_camera_params_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+        """
+        Get current camera parameters via VISCA inquiry commands (async version).
+        
+        Args:
+            cam_id: Camera ID (1-6)
+            venue_number: Venue number (1-15)
+            
+        Returns:
+            Dictionary of camera parameters or None if failed
+        """
+        config_dict = {}
+        
+        # Clear any stale responses from command_futures
+        self.command_futures.clear()
+        
+        # Create tasks for all inquiry commands
+        inquiry_tasks = []
+        for param_name, commands in self.command_map.items():
+            if 'inquiry' in commands:
+                command = self._create_visca_packet(commands['inquiry'])
+                task = asyncio.create_task(
+                    self._send_visca_command_async(cam_id, venue_number, command)
+                )
+                inquiry_tasks.append((param_name, task))
+        
+        # Execute all inquiries concurrently
+        results = await asyncio.gather(*[task for _, task in inquiry_tasks], return_exceptions=True)
+        
+        # Process results
+        for i, (param_name, _) in enumerate(inquiry_tasks):
+            response = results[i]
+            
+            if isinstance(response, Exception):
+                print(f"VISCA: Exception getting {param_name} from camera {cam_id}: {response}")
+                config_dict[param_name] = "0"
+                continue
+            
+            if response and len(response) >= 3:
+                # Parse Sony VISCA response format: 0x90 0x50 [values] 0xFF
+                if response[0] == 0x90 and response[1] == 0x50:
+                    if len(response) == 4:  # Single byte response (DigitalBrightLevel): 90 50 0X FF
+                        value = response[2]
+                        config_dict[param_name] = str(value)
+                        print(f"VISCA: Got {param_name}={value} from camera {cam_id}")
+                    elif len(response) == 7:  # Four byte response: 90 50 0p 0q 0r 0s FF
+                        # Format for Iris, Gain, Shutter, ColorSaturation (4 nibbles)
+                        p = response[2] & 0x0F
+                        q = response[3] & 0x0F
+                        r = response[4] & 0x0F
+                        s = response[5] & 0x0F
+                        value = (p << 12) | (q << 8) | (r << 4) | s
+                        config_dict[param_name] = str(value)
+                        print(f"VISCA: Got {param_name}={value} from camera {cam_id}")
+                    else:
+                        print(f"VISCA: Unexpected response length ({len(response)}) for {param_name}: {response.hex()}")
+                        config_dict[param_name] = "0"
+                else:
+                    print(f"VISCA: Unexpected response format for {param_name}: {response.hex()}")
+                    config_dict[param_name] = "0"
+            else:
+                print(f"VISCA: Failed to get {param_name} from camera {cam_id}")
+                config_dict[param_name] = "0"
+        
+        return config_dict if config_dict else None
+    
+    async def set_camera_params_async(self, cam_id: int, venue_number: int, params_dict: Dict[str, Union[int, str]]) -> bool:
+        """
+        Set camera parameters via VISCA commands with concurrent execution (async version).
+        
+        Args:
+            cam_id: Camera ID (1-6)
+            venue_number: Venue number (1-15)
+            params_dict: Dictionary of parameters to set
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not params_dict:
+            return True
+        
+        # Create tasks for all parameters
+        tasks = []
+        for param_name, value in params_dict.items():
+            if param_name in self.command_map and 'set' in self.command_map[param_name]:
+                task = asyncio.create_task(
+                    self._set_single_param_async(cam_id, venue_number, param_name, value)
+                )
+                tasks.append(task)
+        
+        if not tasks:
+            print("VISCA: No valid parameters to set")
+            return False
+        
+        # Execute all tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Count successes
+        success_count = sum(1 for result in results if result is True)
+        total_params = len(params_dict)
+        
+        print(f"VISCA: Set {success_count}/{total_params} parameters successfully on camera {cam_id}")
+        
+        # Return True if at least some parameters were set successfully
         return success_count > 0
 
 

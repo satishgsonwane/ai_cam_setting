@@ -1,0 +1,17 @@
+# Core dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+requests>=2.25.0
+nats-py>=2.0.0
+
+# Async dependencies for non-blocking operations
+aiohttp>=3.9.0
+aiodns>=3.1.0
+
+# Optional ML dependencies
+torch>=1.9.0
+scikit-learn>=1.0.0
+
+# Development dependencies
+pytest>=6.0.0
+pytest-asyncio>=0.18.0

@@ -72,11 +72,11 @@ TIMEOUT_CGI = 2
 
 acceptable_ranges = {
     #'normalized_brightness': [0.245, 0.326],
-    'normalized_brightness': [0.5, 0.7], #IR
+    'normalized_brightness': [0.3, 0.8], #IR - Expanded range for better recovery
     #'normalized_contrast': [0.129, 0.216],
     #'normalized_blur': [0, 0.9], 
     #'normalized_saturation': [0.578, 0.721],
-    'normalized_saturation': [0.4,0.7], #IR
+    'normalized_saturation': [0.2, 0.8], #IR - Expanded range for better recovery
     #'normalized_dynamic_range': [0.92, 1.0]
     #'normalized_wb' : [0.8,1.2]
 }
@@ -348,6 +348,73 @@ def get_camera_params(cam_id, venue_number, protocol=None):
     
     return protocol.get_camera_params(cam_id, venue_number)
 
+async def get_camera_params_async(cam_id, venue_number, protocol=None):
+    """
+    Get camera parameters using protocol abstraction (async version).
+    
+    Args:
+        cam_id: Camera ID (1-6)
+        venue_number: Venue number (1-15)
+        protocol: Camera protocol instance (if None, creates from config)
+        
+    Returns:
+        Dictionary of camera parameters or None if failed
+    """
+    if protocol is None:
+        protocol = ProtocolFactory.create_protocol_from_config()
+    
+    if not protocol.is_connected():
+        # Check if protocol has async connect method
+        if hasattr(protocol, 'connect_async'):
+            await protocol.connect_async()
+        else:
+            protocol.connect()
+    
+    return await protocol.get_camera_params_async(cam_id, venue_number)
+
+async def multi_set_attempt_async(cam_id, venue_number, USERNAME, PASSWORD, 
+                                  camera_params_to_set, protocol=None):
+    """
+    Set camera parameters with multiple attempts using protocol abstraction (async version).
+    
+    Args:
+        cam_id: Camera ID (1-6)
+        venue_number: Venue number (1-15)
+        USERNAME: Camera username (for compatibility)
+        PASSWORD: Camera password (for compatibility)
+        camera_params_to_set: Parameter string or dictionary
+        protocol: Camera protocol instance (if None, creates from config)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    global initial_params_set
+    
+    if protocol is None:
+        protocol = ProtocolFactory.create_protocol_from_config()
+    
+    if not protocol.is_connected():
+        # Check if protocol has async connect method
+        if hasattr(protocol, 'connect_async'):
+            await protocol.connect_async()
+        else:
+            protocol.connect()
+    
+    # First, set initial parameters if not set
+    if not initial_params_set:
+        if not set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
+            print("Failed to set initial parameters. Aborting further attempts.")
+            return False
+
+    # Parse parameter string to dictionary if needed
+    if isinstance(camera_params_to_set, str):
+        params_dict = dict(item.split("=") for item in camera_params_to_set.split("&") if "=" in item)
+    else:
+        params_dict = camera_params_to_set
+    
+    # Use async method
+    return await protocol.set_camera_params_async(cam_id, venue_number, params_dict)
+
 class CameraSettingsAdjuster:
     """
     Advanced camera settings adjuster using cost-based intelligent parameter selection
@@ -449,11 +516,26 @@ class CameraSettingsAdjuster:
                 if should_adjust:
                     print(f"Adjustment needed for '{feature}': {reason}")
                     
-                    # Find the best parameter adjustment using cost function
-                    best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment(
-                        feature, value, acceptable_range, config_dict, 
-                        self.cam_params_range, self.adjustment_rules
-                    )
+                    # Calculate how far we are from acceptable range
+                    min_val, max_val = acceptable_range
+                    if value < min_val:
+                        deviation_magnitude = min_val - value
+                    else:
+                        deviation_magnitude = value - max_val
+                    
+                    # Use aggressive adjustment if far from range
+                    if deviation_magnitude > 0.15:  # Far from acceptable range
+                        print(f"Large deviation detected ({deviation_magnitude:.3f}), using aggressive adjustment")
+                        best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment_aggressive(
+                            feature, value, acceptable_range, config_dict, 
+                            self.cam_params_range, self.adjustment_rules, max_steps=3
+                        )
+                    else:
+                        # Use normal adjustment for small deviations
+                        best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment(
+                            feature, value, acceptable_range, config_dict, 
+                            self.cam_params_range, self.adjustment_rules
+                        )
                     
                     if best_param and best_value is not None:
                         current_value = config_dict[best_param]

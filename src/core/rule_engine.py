@@ -10,6 +10,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.utils import *
+from utils.utils import get_camera_params_async, multi_set_attempt_async
 from detection.roi_detection import ROIDetector
 from protocols.camera_protocol import ProtocolFactory
 
@@ -102,16 +103,24 @@ async def run(cam_id, venue_number, protocol_type=None):
             await nc.publish("features.target", target_message.encode())
             print(f"Master camera {cam_id} published target features")
 
-        # Get current camera parameters
-        config_dict = get_camera_params(cam_id, venue_number, protocol)
+        # Get current camera parameters (try async first, fallback to sync)
+        try:
+            config_dict = await get_camera_params_async(cam_id, venue_number, protocol)
+        except Exception as e:
+            print(f"Async get_camera_params failed, falling back to sync: {e}")
+            config_dict = get_camera_params(cam_id, venue_number, protocol)
         
         if config_dict is not None:
             # Use CameraSettingsAdjuster to determine necessary adjustments
             camera_params_to_set = adjuster.process_camera_frame(config_dict, image_features)
             
             if camera_params_to_set:
-                # Attempt to set the new camera parameters
-                success = multi_set_attempt(cam_id, venue_number, USERNAME, PASSWORD, camera_params_to_set, protocol)
+                # Attempt to set the new camera parameters (try async first, fallback to sync)
+                try:
+                    success = await multi_set_attempt_async(cam_id, venue_number, USERNAME, PASSWORD, camera_params_to_set, protocol)
+                except Exception as e:
+                    print(f"Async multi_set_attempt failed, falling back to sync: {e}")
+                    success = multi_set_attempt(cam_id, venue_number, USERNAME, PASSWORD, camera_params_to_set, protocol)
                 
                 if success:
                     print(f"Successfully updated camera parameters: {camera_params_to_set}")

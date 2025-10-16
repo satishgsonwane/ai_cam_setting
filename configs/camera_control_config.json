@@ -37,24 +37,30 @@
     }
   },
   "hysteresis": {
-    "dead_band_percentage": 0.05,
-    "inner_threshold_percentage": 0.02,
-    "outer_threshold_percentage": 0.08,
-    "description": "Prevents oscillation by creating dead bands around acceptable ranges"
+    "dead_band_percentage": 0.02,
+    "inner_threshold_percentage": 0.01,
+    "outer_threshold_percentage": 0.03,
+    "description": "Prevents oscillation by creating dead bands around acceptable ranges - reduced for better recovery"
   },
   "protocol": {
     "type": "visca",
+    "async_enabled": true,
     "description": "Camera communication protocol: 'cgi' or 'visca'",
     "cgi": {
       "timeout": 2,
       "max_attempts": 50,
-      "retry_delay": 0.5
+      "retry_delay": 0.5,
+      "concurrent_params": true,
+      "connection_pool_size": 6
     },
     "visca": {
       "port": 52381,
-      "timeout": 1.0,
-      "max_attempts": 10,
-      "retry_delay": 0.5
+      "timeout": 0.1,
+      "max_attempts": 2,
+      "retry_delay": 0.01,
+      "concurrent_params": true,
+      "batch_size": 5,
+      "connection_pool_size": 6
     }
   },
   "roi_detection": {
@@ -73,14 +79,20 @@
   },
   "camera_settings": {
     "acceptable_ranges": {
-      "normalized_brightness": [0.25, 0.5],
-      "normalized_saturation": [0.4, 0.7],
-      "description": "Acceptable ranges for image features"
+      "normalized_brightness": [0.3, 0.8],
+      "normalized_saturation": [0.2, 0.8],
+      "description": "Acceptable ranges for image features - expanded for better recovery"
     },
     "adjustment_rules": {
       "normalized_brightness": ["ExposureIris", "ExposureExposureTime", "ExposureGain", "DigitalBrightLevel"],
       "normalized_saturation": ["ColorSaturation"],
       "description": "Mapping of features to adjustable parameters"
+    },
+    "recovery_mode": {
+      "enabled": true,
+      "aggressive_threshold": 0.15,
+      "max_steps": 3,
+      "description": "Enable aggressive multi-step adjustments for large deviations"
     }
   },
   "network": {
