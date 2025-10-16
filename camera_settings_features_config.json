@@ -1,0 +1,9 @@
+{
+  "image_features": {
+    "brightness": [50, 200],
+    "blur": [0, 1000],
+    "saturation": [50, 200],
+    "white_balance": [0.8, 1.2],
+    "crop_size": [360, 1920]
+  }
+}
