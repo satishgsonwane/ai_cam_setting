@@ -27,13 +27,17 @@ class CostFunctionCalculator:
     and current parameter state.
     """
     
-    def __init__(self, config_file: str = "camera_control_config.json"):
+    def __init__(self, config_file: str = None):
         """
         Initialize the cost calculator with configuration.
         
         Args:
             config_file: Path to configuration file containing cost weights
         """
+        if config_file is None:
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+        
         self.parameter_costs = self._load_parameter_costs(config_file)
         self.hysteresis_config = self._load_hysteresis_config(config_file)
         

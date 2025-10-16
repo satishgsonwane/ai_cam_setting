@@ -170,11 +170,6 @@ logs/
 camera_*.log
 *.pid
 
-# Configuration files with sensitive data
-camera_control_config.json
-cameraconfig.json
-*config.json
-
 # Temporary files
 *.tmp
 *.temp

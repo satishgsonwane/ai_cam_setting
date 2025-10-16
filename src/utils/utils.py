@@ -48,7 +48,8 @@ crop_height, crop_width = features['crop_size']
 
 # Load venue configuration
 try:
-    with open('camera_control_config.json', 'r') as file:
+    config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+    with open(config_path, 'r') as file:
         control_config = json.load(file)
         PORT = control_config.get('network', {}).get('venue_number', 15)
 except FileNotFoundError:
@@ -81,8 +82,16 @@ acceptable_ranges = {
 }
 
 def save_to_json(camera_settings, image_features, output_filename):
-    with open('template.json', 'r') as f:
-        template = json.load(f)
+    template_path = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'template.json')
+    try:
+        with open(template_path, 'r') as f:
+            template = json.load(f)
+    except FileNotFoundError:
+        # Create a basic template if it doesn't exist
+        template = {
+            "camera_settings": {},
+            "image_features": {}
+        }
 
     template["camera_settings"].update(camera_settings)
     template["image_features"].update(image_features)
@@ -345,7 +354,7 @@ class CameraSettingsAdjuster:
     with hysteresis to prevent oscillation.
     """
     
-    def __init__(self, acceptable_ranges: Dict[str, List[float]], config_file: str = "camera_control_config.json"):
+    def __init__(self, acceptable_ranges: Dict[str, List[float]], config_file: str = None):
         """
         Initialize the camera settings adjuster.
         
@@ -353,6 +362,9 @@ class CameraSettingsAdjuster:
             acceptable_ranges: Dictionary mapping feature names to [min, max] acceptable ranges
             config_file: Path to configuration file for cost weights and hysteresis
         """
+        if config_file is None:
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+        
         self.acceptable_ranges = acceptable_ranges
         self.adjustment_rules = self._initialize_adjustment_rules()
         self.cam_params_range = self._load_cam_params_range()
@@ -370,7 +382,8 @@ class CameraSettingsAdjuster:
 
     def _load_cam_params_range(self):
         """Load camera parameter ranges from JSON file."""
-        with open('cam_params_range.json', 'r') as f:
+        config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'cam_params_range.json')
+        with open(config_path, 'r') as f:
             data = json.load(f)
             return {k: v for k, v in data['imaging'].items() if k in [
                  "ExposureIris", "ExposureGain","DigitalBrightLevel",

@@ -128,7 +128,8 @@ def test_configuration_loading():
     print("Testing Configuration Loading...")
     
     try:
-        with open('camera_control_config.json', 'r') as f:
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'camera_control_config.json')
+        with open(config_path, 'r') as f:
             config = json.load(f)
         
         print(f"Cost weights loaded: {len(config.get('cost_weights', {}))} parameters")
@@ -149,7 +150,8 @@ def test_integration():
     
     try:
         # Load configuration
-        with open('camera_control_config.json', 'r') as f:
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'camera_control_config.json')
+        with open(config_path, 'r') as f:
             config = json.load(f)
         
         # Initialize components

@@ -16,13 +16,17 @@ class ROIDetector:
     Region of Interest detector with green pitch mask capabilities.
     """
     
-    def __init__(self, config_file: str = "camera_control_config.json"):
+    def __init__(self, config_file: str = None):
         """
         Initialize ROI detector with configuration.
         
         Args:
             config_file: Path to configuration file
         """
+        if config_file is None:
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+        
         self.config = self._load_config(config_file)
         self.roi_config = self.config.get('roi_detection', {})
         self.use_green_mask = self.roi_config.get('use_green_mask', False)
@@ -220,7 +224,7 @@ def crop_lower_third_of_image(image: np.ndarray) -> np.ndarray:
     return cropped_image
 
 
-def create_roi_detector(config_file: str = "camera_control_config.json") -> ROIDetector:
+def create_roi_detector(config_file: str = None) -> ROIDetector:
     """
     Factory function to create ROI detector instance.
     

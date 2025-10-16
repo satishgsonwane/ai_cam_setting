@@ -32,7 +32,8 @@ MAX_LENGTH_CAM_PARAMS = {"ExposureIris":4,
                          "ColorSaturation":9}
 
 def load_cam_params_range():
-    with open('cam_params_range.json', 'r') as f:
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'cam_params_range.json')
+    with open(config_path, 'r') as f:
         data = json.load(f)
         return {k: v for k, v in data['imaging'].items() if k in [
                 "ExposureIris", "ExposureGain","DigitalBrightLevel",

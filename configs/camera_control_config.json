@@ -1,0 +1,109 @@
+{
+  "cost_weights": {
+    "ExposureIris": {
+      "base_cost": 0.5,
+      "max_cost": 2.0,
+      "min_cost": 0.2,
+      "preferred_direction": "increase",
+      "description": "Low cost - preferred for brightness adjustments, minimal depth-of-field impact"
+    },
+    "ExposureExposureTime": {
+      "base_cost": 1.5,
+      "max_cost": 5.0,
+      "min_cost": 0.5,
+      "preferred_direction": "decrease",
+      "description": "Medium cost - affects motion blur, faster shutter preferred"
+    },
+    "ExposureGain": {
+      "base_cost": 3.0,
+      "max_cost": 10.0,
+      "min_cost": 1.0,
+      "preferred_direction": "decrease",
+      "description": "High cost - introduces noise, use as last resort"
+    },
+    "DigitalBrightLevel": {
+      "base_cost": 2.0,
+      "max_cost": 6.0,
+      "min_cost": 0.5,
+      "preferred_direction": "either",
+      "description": "Medium-high cost - digital processing overhead"
+    },
+    "ColorSaturation": {
+      "base_cost": 0.8,
+      "max_cost": 3.0,
+      "min_cost": 0.3,
+      "preferred_direction": "either",
+      "description": "Low cost for color adjustments"
+    }
+  },
+  "hysteresis": {
+    "dead_band_percentage": 0.05,
+    "inner_threshold_percentage": 0.02,
+    "outer_threshold_percentage": 0.08,
+    "description": "Prevents oscillation by creating dead bands around acceptable ranges"
+  },
+  "protocol": {
+    "type": "visca",
+    "description": "Camera communication protocol: 'cgi' or 'visca'",
+    "cgi": {
+      "timeout": 2,
+      "max_attempts": 50,
+      "retry_delay": 0.5
+    },
+    "visca": {
+      "port": 52381,
+      "timeout": 1.0,
+      "max_attempts": 10,
+      "retry_delay": 0.5
+    }
+  },
+  "roi_detection": {
+    "use_green_mask": false,
+    "description": "Enable green pitch mask filtering for robust field analysis",
+    "green_hsv_range": {
+      "lower": [35, 40, 40],
+      "upper": [85, 255, 255],
+      "description": "HSV range for green pitch detection"
+    },
+    "morphology": {
+      "kernel_size": 5,
+      "iterations": 2,
+      "description": "Morphological operations to clean noise in mask"
+    }
+  },
+  "camera_settings": {
+    "acceptable_ranges": {
+      "normalized_brightness": [0.25, 0.5],
+      "normalized_saturation": [0.4, 0.7],
+      "description": "Acceptable ranges for image features"
+    },
+    "adjustment_rules": {
+      "normalized_brightness": ["ExposureIris", "ExposureExposureTime", "ExposureGain", "DigitalBrightLevel"],
+      "normalized_saturation": ["ColorSaturation"],
+      "description": "Mapping of features to adjustable parameters"
+    }
+  },
+  "network": {
+    "venue_number": 13,
+    "username": "admin",
+    "password": "media99zz",
+    "description": "Network configuration for camera communication"
+  },
+  "image_processing": {
+    "frame_size": {
+      "height": 1080,
+      "width": 1920
+    },
+    "crop_size": {
+      "height": 360,
+      "width": 1920,
+      "description": "Lower third crop dimensions"
+    },
+    "sleep_time_seconds": 1,
+    "decimal_places": 3
+  },
+  "master_camera": {
+    "cam_id": 1,
+    "description": "Master camera ID for multi-camera synchronization"
+  }
+}
