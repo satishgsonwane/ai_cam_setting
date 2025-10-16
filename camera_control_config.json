@@ -43,12 +43,12 @@
     "description": "Prevents oscillation by creating dead bands around acceptable ranges"
   },
   "protocol": {
-    "type": "cgi",
+    "type": "visca",
     "description": "Camera communication protocol: 'cgi' or 'visca'",
     "cgi": {
       "timeout": 2,
       "max_attempts": 50,
-      "retry_delay": 1.0
+      "retry_delay": 0.5
     },
     "visca": {
       "port": 52381,
@@ -84,9 +84,9 @@
     }
   },
   "network": {
-    "venue_number": 15,
+    "venue_number": 13,
     "username": "admin",
-    "password": "123",
+    "password": "media99zz",
     "description": "Network configuration for camera communication"
   },
   "image_processing": {

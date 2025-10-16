@@ -9,13 +9,14 @@ from camera_protocol import ProtocolFactory
 
 #venue_number = PORT
 
-async def run(cam_id, venue_number):
+async def run(cam_id, venue_number, protocol_type=None):
     """
     Main camera control loop with enhanced features.
     
     Args:
         cam_id: Camera ID (1-6)
         venue_number: Venue number (1-15)
+        protocol_type: Protocol type ('cgi' or 'visca'), None for config-based
     """
     # Load configuration
     with open('camera_control_config.json', 'r') as f:
@@ -27,7 +28,15 @@ async def run(cam_id, venue_number):
     
     # Initialize components
     roi_detector = ROIDetector()
-    protocol = ProtocolFactory.create_protocol_from_config()
+    
+    # Create protocol based on argument or config
+    if protocol_type:
+        protocol = ProtocolFactory.create_protocol(protocol_type)
+        print(f"Using {protocol_type.upper()} protocol")
+    else:
+        protocol = ProtocolFactory.create_protocol_from_config()
+        print(f"Using protocol from config: {type(protocol).__name__}")
+    
     adjuster = CameraSettingsAdjuster(acceptable_ranges)
     
     # Connect to NATS
@@ -110,12 +119,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--cam_id", help="Camera ID 1-6")
     parser.add_argument("--venue_number", help="Venue number 1-15", default=15)
+    parser.add_argument("--protocol", help="Protocol type: 'cgi' or 'visca' (default: from config)", 
+                       choices=['cgi', 'visca'], default=None)
     args = parser.parse_args()
     cam_id = int(args.cam_id)
     venue_number = int(args.venue_number)
+    protocol_type = args.protocol
     if (cam_id in [1,2,3,4,5,6]):
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(run(cam_id, venue_number))
+        loop.run_until_complete(run(cam_id, venue_number, protocol_type))
     else:
         print("Invalid camera ID or venue number")
         exit(-1)

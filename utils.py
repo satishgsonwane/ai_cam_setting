@@ -59,14 +59,14 @@ DECIMAL_PLACE = 3
 SLEEP_TIME_IN_SEC = 1
 FOLDER_PATH = "/home/ozer/AI/jsons_cam_settings"
 USERNAME = 'admin'
-PASSWORD = '123'
+PASSWORD = 'media99zz'
 ATTEMPTS_SET_CGI = 50
 SLEEP_TIME_FOR_CGI = 1
 TIMEOUT_CGI = 2
 
 acceptable_ranges = {
     #'normalized_brightness': [0.245, 0.326],
-    'normalized_brightness': [0.25, 0.5], #IR
+    'normalized_brightness': [0.5, 0.7], #IR
     #'normalized_contrast': [0.129, 0.216],
     #'normalized_blur': [0, 0.9], 
     #'normalized_saturation': [0.578, 0.721],
