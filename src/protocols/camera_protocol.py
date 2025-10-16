@@ -47,13 +47,16 @@ class CameraProtocolInterface(ABC):
 class CGIProtocol(CameraProtocolInterface):
     """CGI (HTTP) protocol implementation for camera communication."""
     
-    def __init__(self, config_file: str = "camera_control_config.json"):
+    def __init__(self, config_file: str = None):
         """
         Initialize CGI protocol.
         
         Args:
             config_file: Path to configuration file
         """
+        if config_file is None:
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
         self.config = self._load_config(config_file)
         self.connected = False
         self.username = self.config.get('network', {}).get('username', 'admin')
@@ -178,13 +181,16 @@ class VISCAProtocol(CameraProtocolInterface):
     and 1V pacing (20ms at 50p) for reliable communication.
     """
     
-    def __init__(self, config_file: str = "camera_control_config.json"):
+    def __init__(self, config_file: str = None):
         """
         Initialize VISCA protocol.
         
         Args:
             config_file: Path to configuration file
         """
+        if config_file is None:
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
         self.config = self._load_config(config_file)
         self.connected = False
         self.socket = None  # Single UDP socket for send+recv
@@ -542,7 +548,7 @@ class ProtocolFactory:
     """Factory class for creating camera protocol instances."""
     
     @staticmethod
-    def create_protocol(protocol_type: str = "cgi", config_file: str = "camera_control_config.json") -> CameraProtocolInterface:
+    def create_protocol(protocol_type: str = "cgi", config_file: str = None) -> CameraProtocolInterface:
         """
         Create a camera protocol instance.
         
@@ -564,7 +570,7 @@ class ProtocolFactory:
             raise ValueError(f"Unsupported protocol type: {protocol_type}")
     
     @staticmethod
-    def create_protocol_from_config(config_file: str = "camera_control_config.json") -> CameraProtocolInterface:
+    def create_protocol_from_config(config_file: str = None) -> CameraProtocolInterface:
         """
         Create protocol instance based on configuration file.
         
@@ -574,6 +580,10 @@ class ProtocolFactory:
         Returns:
             Protocol instance
         """
+        if config_file is None:
+            import os
+            config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+        
         try:
             with open(config_file, 'r') as f:
                 config = json.load(f)
@@ -581,4 +591,4 @@ class ProtocolFactory:
                 return ProtocolFactory.create_protocol(protocol_type, config_file)
         except FileNotFoundError:
             print(f"Config file {config_file} not found, using default CGI protocol")
-            return CGIProtocol()
+            return CGIProtocol(config_file)

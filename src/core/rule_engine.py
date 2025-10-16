@@ -3,9 +3,15 @@ import asyncio
 import nats
 import json
 import argparse
-from utils import *
-from roi_detection import ROIDetector
-from camera_protocol import ProtocolFactory
+import os
+import sys
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from utils.utils import *
+from detection.roi_detection import ROIDetector
+from protocols.camera_protocol import ProtocolFactory
 
 #venue_number = PORT
 
@@ -19,7 +25,8 @@ async def run(cam_id, venue_number, protocol_type=None):
         protocol_type: Protocol type ('cgi' or 'visca'), None for config-based
     """
     # Load configuration
-    with open('camera_control_config.json', 'r') as f:
+    config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_control_config.json')
+    with open(config_path, 'r') as f:
         config = json.load(f)
     
     # Determine if this is the master camera

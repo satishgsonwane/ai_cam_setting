@@ -6,20 +6,25 @@ import requests
 from requests.auth import HTTPDigestAuth
 import re
 from typing import Dict, List, Union, Tuple
-#import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import random
 import os
-from cost_functions import CostFunctionCalculator
-from camera_protocol import ProtocolFactory
-from roi_detection import ROIDetector, crop_lower_third_of_image
+import sys
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from cost.cost_functions import CostFunctionCalculator
+from protocols.camera_protocol import ProtocolFactory
+from detection.roi_detection import ROIDetector, crop_lower_third_of_image
 
 # Load configuration from JSON file
 try:
-    with open('camera_settings_features_config.json', 'r') as file:
+    config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'configs', 'camera_settings_features_config.json')
+    with open(config_path, 'r') as file:
         config = json.load(file)
 except FileNotFoundError:
     # Use default configuration if file doesn't exist

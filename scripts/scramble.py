@@ -2,7 +2,13 @@ import requests
 from requests.auth import HTTPDigestAuth
 import time
 import argparse
-from utils import *
+import sys
+import os
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from utils.utils import *
 
 # def scramble_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
 #     venue_number += 54

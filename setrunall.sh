@@ -117,7 +117,7 @@ start_camera() {
         echo "[DRY RUN] Would start camera $cam_id with protocol: ${protocol:-"from config"}"
         verbose_echo "[DRY RUN] Conda environment: $CONDA_ENV"
         verbose_echo "[DRY RUN] Python path: $conda_python"
-        verbose_echo "[DRY RUN] Command: $conda_python rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER ${protocol:+--protocol $protocol}"
+        verbose_echo "[DRY RUN] Command: $conda_python src/core/rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER ${protocol:+--protocol $protocol}"
         verbose_echo "[DRY RUN] Log file: $log_file"
         return
     fi
@@ -125,9 +125,9 @@ start_camera() {
     echo "Starting camera $cam_id..."
     if [ -n "$protocol" ]; then
         echo "Using $protocol protocol"
-        "$conda_python" rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER --protocol $protocol > $log_file 2>&1 &
+        "$conda_python" src/core/rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER --protocol $protocol > $log_file 2>&1 &
     else
-        "$conda_python" rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER > $log_file 2>&1 &
+        "$conda_python" src/core/rule_engine.py --cam_id $cam_id --venue_number $VENUE_NUMBER > $log_file 2>&1 &
     fi
     local pid=$!
     echo "Camera $cam_id started with PID $pid"

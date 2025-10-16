@@ -9,10 +9,16 @@ including cost functions, hysteresis, protocol abstraction, and ROI detection.
 import json
 import numpy as np
 import cv2
-from cost_functions import CostFunctionCalculator
-from camera_protocol import ProtocolFactory, CGIProtocol
-from roi_detection import ROIDetector
-from utils import CameraSettingsAdjuster, acceptable_ranges
+import sys
+import os
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from cost.cost_functions import CostFunctionCalculator
+from protocols.camera_protocol import ProtocolFactory, CGIProtocol
+from detection.roi_detection import ROIDetector
+from utils.utils import CameraSettingsAdjuster, acceptable_ranges
 
 
 def test_cost_functions():

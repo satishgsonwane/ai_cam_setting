@@ -10,9 +10,15 @@ import asyncio
 import nats
 import json
 import time
-from camera_protocol import ProtocolFactory
-from utils import CameraSettingsAdjuster, acceptable_ranges
-from cost_functions import CostFunctionCalculator
+import sys
+import os
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from protocols.camera_protocol import ProtocolFactory
+from utils.utils import CameraSettingsAdjuster, acceptable_ranges
+from cost.cost_functions import CostFunctionCalculator
 
 async def demo_camera_control():
     """Demonstrate the camera control system functionality."""

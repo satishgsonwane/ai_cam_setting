@@ -9,8 +9,14 @@ without requiring video feed.
 import asyncio
 import nats
 import json
-from camera_protocol import ProtocolFactory
-from utils import CameraSettingsAdjuster, acceptable_ranges
+import sys
+import os
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from protocols.camera_protocol import ProtocolFactory
+from utils.utils import CameraSettingsAdjuster, acceptable_ranges
 
 async def test_protocols():
     """Test both CGI and VISCA protocols."""

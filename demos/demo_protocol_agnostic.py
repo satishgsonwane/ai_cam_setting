@@ -9,8 +9,14 @@ CGI and VISCA protocols, showing how to switch between them.
 import asyncio
 import nats
 import json
-from camera_protocol import ProtocolFactory
-from utils import CameraSettingsAdjuster, acceptable_ranges
+import sys
+import os
+
+# Add src directory to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from protocols.camera_protocol import ProtocolFactory
+from utils.utils import CameraSettingsAdjuster, acceptable_ranges
 
 async def demo_protocol_agnostic_system():
     """Demonstrate protocol-agnostic camera control."""
