@@ -173,10 +173,8 @@ class CostFunctionCalculator:
         
         # Scale cost based on feature delta magnitude
         # Larger deltas should prefer more effective parameters
-        if abs(feature_delta) > 0.2:  # Very large deviation - aggressive recovery needed
-            cost *= 0.5  # Strongly favor more effective adjustments
-        elif abs(feature_delta) > 0.1:  # Large deviation
-            cost *= 0.7  # Favor more effective adjustments
+        if abs(feature_delta) > 0.1:  # Large deviation
+            cost *= 0.8  # Slightly favor more effective adjustments
         elif abs(feature_delta) < 0.02:  # Small deviation
             cost *= 1.2  # Slightly penalize adjustments for small deviations
             
@@ -237,6 +235,13 @@ class CostFunctionCalculator:
         inner_min, inner_max = inner_bounds
         outer_min, outer_max = outer_bounds
         
+        # Debug: Print hysteresis bounds
+        print(f"[HYSTERESIS DEBUG] Feature: {feature_name}")
+        print(f"  Acceptable range: [{min_val:.3f}, {max_val:.3f}]")
+        print(f"  Inner bounds: [{inner_min:.3f}, {inner_max:.3f}]")
+        print(f"  Outer bounds: [{outer_min:.3f}, {outer_max:.3f}]")
+        print(f"  Current value: {feature_value:.3f}")
+        
         # Check if value is outside outer bounds (definitely needs adjustment)
         if feature_value < outer_min:
             return True, f"Value {feature_value:.3f} below outer threshold {outer_min:.3f}"
@@ -275,6 +280,7 @@ class CostFunctionCalculator:
             Tuple of (best_parameter, new_value, cost)
         """
         if feature_name not in adjustment_rules:
+            print(f"[COST DEBUG] No adjustment rules for feature: {feature_name}")
             return None, None, float('inf')
         
         # Calculate feature delta
@@ -282,9 +288,11 @@ class CostFunctionCalculator:
         if feature_value < min_val:
             feature_delta = feature_value - min_val  # Negative - need to increase
             increase_needed = True
+            print(f"[COST DEBUG] Feature {feature_name}={feature_value:.3f} BELOW range [{min_val:.3f}, {max_val:.3f}], need to INCREASE")
         elif feature_value > max_val:
             feature_delta = feature_value - max_val  # Positive - need to decrease
             increase_needed = False
+            print(f"[COST DEBUG] Feature {feature_name}={feature_value:.3f} ABOVE range [{min_val:.3f}, {max_val:.3f}], need to DECREASE")
         else:
             return None, None, float('inf')  # No adjustment needed
         
@@ -292,9 +300,15 @@ class CostFunctionCalculator:
         best_value = None
         best_cost = float('inf')
         
+        print(f"[COST DEBUG] Evaluating parameters: {adjustment_rules[feature_name]}")
+        
         # Evaluate each possible parameter adjustment
         for param_name in adjustment_rules[feature_name]:
-            if param_name not in param_ranges or param_name not in current_params:
+            if param_name not in param_ranges:
+                print(f"[COST DEBUG]   {param_name}: NOT in param_ranges")
+                continue
+            if param_name not in current_params:
+                print(f"[COST DEBUG]   {param_name}: NOT in current_params")
                 continue
                 
             current_value = current_params[param_name]
@@ -309,6 +323,7 @@ class CostFunctionCalculator:
                 elif not increase_needed and current_idx > 0:
                     next_value = param_range[current_idx - 1]
                 else:
+                    print(f"[COST DEBUG]   {param_name}: at boundary (current={current_value}, idx={current_idx}, range_len={len(param_range)})")
                     continue  # Can't adjust this parameter further
                     
                 # Calculate cost for this adjustment
@@ -316,107 +331,16 @@ class CostFunctionCalculator:
                     param_name, current_value, next_value, param_range, feature_delta
                 )
                 
+                print(f"[COST DEBUG]   {param_name}: {current_value} -> {next_value}, cost={cost:.2f}")
+                
                 if cost < best_cost:
                     best_cost = cost
                     best_param = param_name
                     best_value = next_value
                     
-            except (ValueError, IndexError):
+            except (ValueError, IndexError) as e:
+                print(f"[COST DEBUG]   {param_name}: ERROR - {e}")
                 continue
         
-        return best_param, best_value, best_cost
-    
-    def find_best_adjustment_aggressive(
-        self,
-        feature_name: str,
-        feature_value: float,
-        acceptable_range: Tuple[float, float],
-        current_params: Dict[str, Union[int, str]],
-        param_ranges: Dict[str, List[Union[int, str]]],
-        adjustment_rules: Dict[str, List[str]],
-        max_steps: int = 3
-    ) -> Tuple[str, Union[int, str], float]:
-        """
-        Find the best parameter adjustment allowing for multiple steps when far from range.
-        
-        Args:
-            feature_name: Name of the image feature to adjust
-            feature_value: Current feature value
-            acceptable_range: Acceptable range for the feature
-            current_params: Current camera parameters
-            param_ranges: Available parameter ranges
-            adjustment_rules: Rules mapping features to adjustable parameters
-            max_steps: Maximum number of steps to consider
-            
-        Returns:
-            Tuple of (best_parameter, new_value, cost)
-        """
-        if feature_name not in adjustment_rules:
-            return None, None, float('inf')
-        
-        # Calculate feature delta
-        min_val, max_val = acceptable_range
-        if feature_value < min_val:
-            feature_delta = feature_value - min_val  # Negative - need to increase
-            increase_needed = True
-        elif feature_value > max_val:
-            feature_delta = feature_value - max_val  # Positive - need to decrease
-            increase_needed = False
-        else:
-            return None, None, float('inf')  # No adjustment needed
-        
-        best_param = None
-        best_value = None
-        best_cost = float('inf')
-        
-        # Determine how many steps to consider based on how far we are
-        deviation_magnitude = abs(feature_delta)
-        if deviation_magnitude > 0.3:  # Very far from range
-            steps_to_consider = min(max_steps, 3)
-        elif deviation_magnitude > 0.15:  # Far from range
-            steps_to_consider = min(max_steps, 2)
-        else:
-            steps_to_consider = 1
-        
-        # Evaluate each possible parameter adjustment
-        for param_name in adjustment_rules[feature_name]:
-            if param_name not in param_ranges or param_name not in current_params:
-                continue
-                
-            current_value = current_params[param_name]
-            param_range = param_ranges[param_name]
-            
-            # Try different step sizes
-            for steps in range(1, steps_to_consider + 1):
-                try:
-                    current_idx = param_range.index(str(current_value))
-                    
-                    if increase_needed and current_idx + steps < len(param_range):
-                        target_value = param_range[current_idx + steps]
-                    elif not increase_needed and current_idx - steps >= 0:
-                        target_value = param_range[current_idx - steps]
-                    else:
-                        continue  # Can't adjust this parameter this many steps
-                        
-                    # Calculate cost for this adjustment (penalize larger steps)
-                    base_cost = self.calculate_adjustment_cost(
-                        param_name, current_value, target_value, param_range, feature_delta
-                    )
-                    
-                    # Apply step penalty (but less penalty for large deviations)
-                    if deviation_magnitude > 0.2:
-                        step_penalty = 1.0 + (steps - 1) * 0.1  # Minimal penalty for large deviations
-                    else:
-                        step_penalty = 1.0 + (steps - 1) * 0.3  # Higher penalty for small deviations
-                    
-                    cost = base_cost * step_penalty
-                    
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_param = param_name
-                        best_value = target_value
-                        
-                except (ValueError, IndexError):
-                    continue
-        
+        print(f"[COST DEBUG] Best choice: {best_param}={best_value} (cost={best_cost:.2f})")
         return best_param, best_value, best_cost

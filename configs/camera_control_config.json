@@ -37,10 +37,10 @@
     }
   },
   "hysteresis": {
-    "dead_band_percentage": 0.02,
-    "inner_threshold_percentage": 0.01,
-    "outer_threshold_percentage": 0.03,
-    "description": "Prevents oscillation by creating dead bands around acceptable ranges - reduced for better recovery"
+    "dead_band_percentage": 0.05,
+    "inner_threshold_percentage": 0.02,
+    "outer_threshold_percentage": 0.08,
+    "description": "Prevents oscillation by creating dead bands around acceptable ranges"
   },
   "protocol": {
     "type": "visca",
@@ -79,20 +79,14 @@
   },
   "camera_settings": {
     "acceptable_ranges": {
-      "normalized_brightness": [0.3, 0.8],
-      "normalized_saturation": [0.2, 0.8],
-      "description": "Acceptable ranges for image features - expanded for better recovery"
+      "normalized_brightness": [0.25, 0.5],
+      "normalized_saturation": [0.4, 0.7],
+      "description": "Acceptable ranges for image features"
     },
     "adjustment_rules": {
       "normalized_brightness": ["ExposureIris", "ExposureExposureTime", "ExposureGain", "DigitalBrightLevel"],
       "normalized_saturation": ["ColorSaturation"],
       "description": "Mapping of features to adjustable parameters"
-    },
-    "recovery_mode": {
-      "enabled": true,
-      "aggressive_threshold": 0.15,
-      "max_steps": 3,
-      "description": "Enable aggressive multi-step adjustments for large deviations"
     }
   },
   "network": {

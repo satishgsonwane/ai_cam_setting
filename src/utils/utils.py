@@ -72,11 +72,11 @@ TIMEOUT_CGI = 2
 
 acceptable_ranges = {
     #'normalized_brightness': [0.245, 0.326],
-    'normalized_brightness': [0.3, 0.8], #IR - Expanded range for better recovery
+    'normalized_brightness': [0.5, 0.7], #IR
     #'normalized_contrast': [0.129, 0.216],
     #'normalized_blur': [0, 0.9], 
     #'normalized_saturation': [0.578, 0.721],
-    'normalized_saturation': [0.2, 0.8], #IR - Expanded range for better recovery
+    'normalized_saturation': [0.4,0.7], #IR
     #'normalized_dynamic_range': [0.92, 1.0]
     #'normalized_wb' : [0.8,1.2]
 }
@@ -233,30 +233,79 @@ def crop_lower_third_of_image(image):
     image = image[(2*height)//3 : height, :]
     return image
 
-def set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
+def set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD, protocol=None):
+    """
+    Set initial camera parameters using protocol abstraction.
+    
+    Args:
+        cam_id: Camera ID (1-6)
+        venue_number: Venue number (1-15)
+        USERNAME: Camera username
+        PASSWORD: Camera password
+        protocol: Camera protocol instance (if None, uses CGI for backward compatibility)
+        
+    Returns:
+        True if successful, False otherwise
+    """
     global initial_params_set
     if initial_params_set:
         return True
-    venue_number += 54
-    initial_params = "ExposureMode=manual&ExposureIris=11&ExposureGain=3&ExposureExposureTime=10&GammaLevel=0&WhiteBalanceMode=atw&ColorMatrixEnable=on&WhiteBalanceCbGain=54&WhiteBalanceCrGain=54&ColorHue=7&DetailLevel=7"
-    initial_url = f'http://192.168.{venue_number}.5{cam_id}/command/imaging.cgi?{initial_params}'
     
-    for attempt in range(ATTEMPTS_SET_CGI):
-        try:
-            initial_response = requests.post(initial_url, auth=HTTPDigestAuth(USERNAME, PASSWORD), timeout=TIMEOUT_CGI)
-            if initial_response.status_code == 200:
-                print(f"******Successfully set initial parameters on attempt {attempt + 1} ******")
-                initial_params_set = True
-                return True
-            else:
-                print(f"Failed to set initial parameters on attempt {attempt + 1}. Status code: {initial_response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"Error setting initial camera params on attempt {attempt + 1}: {e}")
+    # If protocol is provided, use it; otherwise fall back to legacy CGI method
+    if protocol is not None:
+        # Protocol-aware initialization - only set parameters supported by the protocol
+        if hasattr(protocol, '__class__') and 'VISCA' in protocol.__class__.__name__:
+            # VISCA protocol - set only supported parameters
+            initial_params_dict = {
+                'ExposureIris': '11',
+                'ExposureGain': '3',
+                'ExposureExposureTime': '10'
+            }
+        else:
+            # CGI protocol - set all parameters
+            initial_params_dict = {
+                'ExposureMode': 'manual',
+                'ExposureIris': '11',
+                'ExposureGain': '3',
+                'ExposureExposureTime': '10',
+                'GammaLevel': '0',
+                'WhiteBalanceMode': 'atw',
+                'ColorMatrixEnable': 'on',
+                'WhiteBalanceCbGain': '54',
+                'WhiteBalanceCrGain': '54',
+                'ColorHue': '7',
+                'DetailLevel': '7'
+            }
         
-        time.sleep(SLEEP_TIME_FOR_CGI)
-    
-    print(f"Failed to set initial parameters after {ATTEMPTS_SET_CGI} attempts")
-    return False
+        if protocol.set_camera_params(cam_id, venue_number, initial_params_dict):
+            print(f"******Successfully set initial parameters using {protocol.__class__.__name__} ******")
+            initial_params_set = True
+            return True
+        else:
+            print(f"Failed to set initial parameters using {protocol.__class__.__name__}")
+            return False
+    else:
+        # Legacy CGI-only method for backward compatibility
+        venue_number += 54
+        initial_params = "ExposureMode=manual&ExposureIris=11&ExposureGain=3&ExposureExposureTime=10&GammaLevel=0&WhiteBalanceMode=atw&ColorMatrixEnable=on&WhiteBalanceCbGain=54&WhiteBalanceCrGain=54&ColorHue=7&DetailLevel=7"
+        initial_url = f'http://192.168.{venue_number}.5{cam_id}/command/imaging.cgi?{initial_params}'
+        
+        for attempt in range(ATTEMPTS_SET_CGI):
+            try:
+                initial_response = requests.post(initial_url, auth=HTTPDigestAuth(USERNAME, PASSWORD), timeout=TIMEOUT_CGI)
+                if initial_response.status_code == 200:
+                    print(f"******Successfully set initial parameters on attempt {attempt + 1} ******")
+                    initial_params_set = True
+                    return True
+                else:
+                    print(f"Failed to set initial parameters on attempt {attempt + 1}. Status code: {initial_response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Error setting initial camera params on attempt {attempt + 1}: {e}")
+            
+            time.sleep(SLEEP_TIME_FOR_CGI)
+        
+        print(f"Failed to set initial parameters after {ATTEMPTS_SET_CGI} attempts")
+        return False
 
 def scramble_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
     venue_number += 54
@@ -315,7 +364,7 @@ def multi_set_attempt(cam_id, venue_number, USERNAME, PASSWORD, camera_params_to
     
     # First, set initial parameters if not set
     if not initial_params_set:
-        if not set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
+        if not set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD, protocol):
             print("Failed to set initial parameters. Aborting further attempts.")
             return False
 
@@ -402,7 +451,7 @@ async def multi_set_attempt_async(cam_id, venue_number, USERNAME, PASSWORD,
     
     # First, set initial parameters if not set
     if not initial_params_set:
-        if not set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD):
+        if not set_initial_camera_params(cam_id, venue_number, USERNAME, PASSWORD, protocol):
             print("Failed to set initial parameters. Aborting further attempts.")
             return False
 
@@ -436,6 +485,14 @@ class CameraSettingsAdjuster:
         self.adjustment_rules = self._initialize_adjustment_rules()
         self.cam_params_range = self._load_cam_params_range()
         self.cost_calculator = CostFunctionCalculator(config_file)
+        
+        # Load protocol type from config
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+                self.protocol_type = config.get('protocol', {}).get('type', 'cgi')
+        except:
+            self.protocol_type = 'cgi'
         
         # Track adjustment history for debugging
         self.adjustment_history = []
@@ -516,26 +573,11 @@ class CameraSettingsAdjuster:
                 if should_adjust:
                     print(f"Adjustment needed for '{feature}': {reason}")
                     
-                    # Calculate how far we are from acceptable range
-                    min_val, max_val = acceptable_range
-                    if value < min_val:
-                        deviation_magnitude = min_val - value
-                    else:
-                        deviation_magnitude = value - max_val
-                    
-                    # Use aggressive adjustment if far from range
-                    if deviation_magnitude > 0.15:  # Far from acceptable range
-                        print(f"Large deviation detected ({deviation_magnitude:.3f}), using aggressive adjustment")
-                        best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment_aggressive(
-                            feature, value, acceptable_range, config_dict, 
-                            self.cam_params_range, self.adjustment_rules, max_steps=3
-                        )
-                    else:
-                        # Use normal adjustment for small deviations
-                        best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment(
-                            feature, value, acceptable_range, config_dict, 
-                            self.cam_params_range, self.adjustment_rules
-                        )
+                    # Find the best parameter adjustment using cost function
+                    best_param, best_value, best_cost = self.cost_calculator.find_best_adjustment(
+                        feature, value, acceptable_range, config_dict, 
+                        self.cam_params_range, self.adjustment_rules
+                    )
                     
                     if best_param and best_value is not None:
                         current_value = config_dict[best_param]
@@ -566,19 +608,27 @@ class CameraSettingsAdjuster:
 
     def generate_camera_params_string(self, settings: Dict[str, Union[int, str]]) -> str:
         """
-        Generate camera parameter string for CGI command.
+        Generate camera parameter string for CGI command or dict for VISCA.
         
         Args:
             settings: Dictionary of parameter changes
             
         Returns:
-            Formatted parameter string for CGI command
+            Formatted parameter string for CGI command, or original dict for VISCA
         """
         if not settings:
             return ""
-            
-        params = "&".join(f"{k}={v}" for k, v in settings.items())
-        return f"{params}&ExposureMode=manual&WhiteBalanceMode=atw"
+        
+        # For VISCA protocol, return just the parameter dict (as string representation)
+        # The multi_set_attempt will parse it back to dict
+        if self.protocol_type == 'visca':
+            # Return only the parameters that VISCA supports
+            params = "&".join(f"{k}={v}" for k, v in settings.items())
+            return params
+        else:
+            # For CGI, add the mode parameters
+            params = "&".join(f"{k}={v}" for k, v in settings.items())
+            return f"{params}&ExposureMode=manual&WhiteBalanceMode=atw"
     
     def process_camera_frame(self, config_dict: Dict[str, Union[int, str]], image_features: Dict[str, float]) -> str:
         """

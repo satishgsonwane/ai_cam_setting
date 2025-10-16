@@ -673,7 +673,7 @@ class VISCAProtocol(CameraProtocolInterface):
                         int_value
                     )
                     
-                    print(f"VISCA: Setting {param_name}={int_value} on camera {cam_id}")
+                    print(f"VISCA: Setting {param_name}={int_value} on camera {cam_id} (hex: {command.hex()})")
                     
                     # Send command
                     response = self._send_visca_command(cam_id, venue_number, command)
