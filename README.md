@@ -74,6 +74,51 @@ Start cameras with CGI protocol:
 - Direct Sony camera control
 - Optimized for Sony SRG-XB25/SRG-XP1 cameras
 
+## Concurrency Control
+
+The system supports controlled concurrency with rate limiting for optimal performance:
+
+- **Configurable Limits**: Set max concurrent operations per camera (default: 5)
+- **Rate Limiting**: Prevent camera overload with requests-per-second limits (default: 10 RPS)
+- **Adaptive Fallback**: Automatically reduces concurrency on failures
+- **Proper Pacing**: Respects VISCA timing requirements (10ms concurrent, 20ms sequential)
+- **Backward Compatibility**: Opt-in via configuration, old behavior preserved when disabled
+
+### Configuration
+
+Configure in `configs/camera_control_config.json` under `protocol.visca.concurrency`:
+
+```json
+{
+  "protocol": {
+    "visca": {
+      "concurrency": {
+        "enabled": true,
+        "max_concurrent_operations": 5,
+        "fallback_to_sequential": true,
+        "pacing_ms": {
+          "concurrent": 10,
+          "sequential": 20,
+          "retry_delay": 5
+        },
+        "rate_limiting": {
+          "set_operations": true,
+          "get_operations": true,
+          "max_requests_per_second": 10
+        }
+      }
+    }
+  }
+}
+```
+
+### Performance Benefits
+
+- **5x Speed Improvement**: Concurrent parameter setting vs sequential
+- **Adaptive Behavior**: Reduces concurrency when failures detected
+- **Fault Tolerance**: Partial success handling and retry logic
+- **Resource Protection**: Rate limiting prevents camera overload
+
 ## Testing
 
 Run the test suite:

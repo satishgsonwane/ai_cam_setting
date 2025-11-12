@@ -60,7 +60,22 @@
       "retry_delay": 0.01,
       "concurrent_params": true,
       "batch_size": 5,
-      "connection_pool_size": 6
+      "connection_pool_size": 6,
+      "concurrency": {
+        "enabled": true,
+        "max_concurrent_operations": 5,
+        "fallback_to_sequential": true,
+        "pacing_ms": {
+          "concurrent": 10,
+          "sequential": 20,
+          "retry_delay": 5
+        },
+        "rate_limiting": {
+          "set_operations": true,
+          "get_operations": true,
+          "max_requests_per_second": 10
+        },
+      }
     }
   },
   "roi_detection": {
@@ -111,5 +126,18 @@
   "master_camera": {
     "cam_id": 1,
     "description": "Master camera ID for multi-camera synchronization"
+  },
+  "_documentation_reference": {
+    "description": "Comprehensive configuration documentation available at: docs/CONFIGURATION_REFERENCE.md",
+    "quick_reference": {
+      "cost_weights": "Camera parameter adjustment preferences (lower cost = preferred)",
+      "hysteresis": "Oscillation prevention with dead bands around targets",
+      "protocol": "Communication protocol settings (CGI/VISCA) with concurrency control",
+      "roi_detection": "Image analysis and green pitch detection settings",
+      "camera_settings": "Parameter adjustment rules and acceptable ranges",
+      "network": "Authentication and venue configuration",
+      "image_processing": "Frame dimensions and analysis settings",
+      "master_camera": "Multi-camera coordination settings"
+    }
   }
 }

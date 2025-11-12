@@ -277,6 +277,61 @@ async def test_concurrent_operations():
     print("• Error handling for individual camera failures")
     print(f"{'='*60}")
 
+async def test_controlled_concurrency():
+    """Test controlled concurrency with rate limiting."""
+    print("=" * 60)
+    print("CONTROLLED CONCURRENCY TEST")
+    print("=" * 60)
+    
+    # Test VISCA protocol with controlled concurrency
+    protocol = ProtocolFactory.create_protocol('visca')
+    
+    if not protocol.connect():
+        print("Failed to connect VISCA protocol")
+        return
+    
+    # Test with multiple parameters
+    params = {
+        'ExposureIris': '11',
+        'ExposureGain': '3',
+        'ExposureExposureTime': '10',
+        'ColorSaturation': '5',
+        'DigitalBrightLevel': '2'
+    }
+    
+    print(f"Testing controlled concurrency with {len(params)} parameters:")
+    for param, value in params.items():
+        print(f"  {param}: {value}")
+    
+    # Test SET operations with controlled concurrency
+    success = await protocol.set_camera_params_async(2, 13, params)
+    stats = protocol.get_concurrency_stats()
+    
+    print(f"\nControlled concurrency results:")
+    print(f"  Success: {success}")
+    print(f"  Concurrency enabled: {stats['enabled']}")
+    print(f"  Current limit: {stats['current_limit']}")
+    print(f"  Max limit: {stats['max_limit']}")
+    print(f"  Success count: {stats['success_count']}")
+    print(f"  Failure count: {stats['failure_count']}")
+    print(f"  Success rate: {stats['success_rate']:.2%}")
+    print(f"  Rate limiting active: {stats['rate_limiting_active']}")
+    
+    # Test GET operations with controlled concurrency
+    print(f"\nTesting controlled concurrent parameter retrieval...")
+    config_dict = await protocol.get_camera_params_async(2, 13)
+    
+    if config_dict:
+        print(f"Retrieved {len(config_dict)} parameters:")
+        for param, value in config_dict.items():
+            print(f"  {param}: {value}")
+    else:
+        print("Failed to retrieve parameters")
+    
+    # Disconnect protocol
+    protocol.disconnect()
+    print(f"\nControlled concurrency test completed")
+
 async def main():
     """Run all tests."""
     await test_protocols()
@@ -284,6 +339,8 @@ async def main():
     await test_protocols_async()
     print("\n" + "="*60 + "\n")
     await test_concurrent_operations()
+    print("\n" + "="*60 + "\n")
+    await test_controlled_concurrency()
 
 if __name__ == "__main__":
     asyncio.run(main())

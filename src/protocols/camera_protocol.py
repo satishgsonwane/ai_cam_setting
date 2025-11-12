@@ -11,7 +11,7 @@ import time
 import requests
 from requests.auth import HTTPDigestAuth
 from abc import ABC, abstractmethod
-from typing import Dict, List, Union, Optional, Tuple
+from typing import Dict, List, Union, Optional, Tuple, Any
 import struct
 import asyncio
 import aiohttp
@@ -289,11 +289,11 @@ class VISCADatagramProtocol(asyncio.DatagramProtocol):
             visca_payload = data[8:]
             sequence_number = struct.unpack('>I', data[4:8])[0]
             
-            # Resolve pending futures
-            if sequence_number in self.visca_protocol.command_futures:
-                future = self.visca_protocol.command_futures.pop(sequence_number)
-                if not future.done():
-                    future.set_result(visca_payload)
+            tracker = self.visca_protocol.command_futures.get(sequence_number)
+            if tracker:
+                tracker.handle_response(visca_payload)
+                if tracker.is_complete():
+                    self.visca_protocol.command_futures.pop(sequence_number, None)
     
     def error_received(self, exc):
         """Handle protocol errors."""
@@ -303,6 +303,88 @@ class VISCADatagramProtocol(asyncio.DatagramProtocol):
         """Called when connection is lost."""
         if exc:
             print(f"VISCA datagram protocol connection lost: {exc}")
+
+
+class RateLimiter:
+    """Token bucket rate limiter for camera operations."""
+    
+    def __init__(self, max_requests_per_second: int):
+        self.max_requests = max_requests_per_second
+        self.tokens = max_requests_per_second
+        self.last_update = time.time()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Acquire a token, waiting if necessary."""
+        async with self.lock:
+            now = time.time()
+            elapsed = now - self.last_update
+            self.tokens = min(self.max_requests, self.tokens + elapsed * self.max_requests)
+            self.last_update = now
+            
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return
+            
+            wait_time = (1 - self.tokens) / self.max_requests
+            await asyncio.sleep(wait_time)
+            self.tokens = 0
+
+
+class CommandTracker:
+    """Track ACK and completion responses for a VISCA command sequence."""
+
+    def __init__(self, sequence_number: int, expect_completion: bool):
+        loop = asyncio.get_event_loop()
+        self.sequence_number = sequence_number
+        self.expect_completion = expect_completion
+        self.ack_future: asyncio.Future = loop.create_future()
+        self.completion_future: Optional[asyncio.Future] = loop.create_future() if expect_completion else None
+        self.ack_payload: Optional[bytes] = None
+        self.completion_payload: Optional[bytes] = None
+
+    @staticmethod
+    def _is_completion(payload: bytes) -> bool:
+        if len(payload) < 2 or payload[0] != 0x90:
+            return False
+        response_type = payload[1] & 0xF0
+        return response_type in (0x50, 0x60)
+
+    def handle_response(self, payload: bytes):
+        """Resolve any pending futures based on the incoming payload."""
+        if not self.ack_future.done():
+            self.ack_payload = payload
+            self.ack_future.set_result(payload)
+
+        if self.expect_completion and self.completion_future and not self.completion_future.done():
+            if self._is_completion(payload):
+                self.completion_payload = payload
+                self.completion_future.set_result(payload)
+
+    def is_complete(self) -> bool:
+        if not self.expect_completion:
+            return self.ack_future.done() and not self.ack_future.cancelled()
+        return (
+            self.ack_future.done()
+            and not self.ack_future.cancelled()
+            and self.completion_future is not None
+            and self.completion_future.done()
+            and not self.completion_future.cancelled()
+        )
+
+    async def wait_for_ack(self, timeout: float) -> bytes:
+        return await asyncio.wait_for(self.ack_future, timeout=timeout)
+
+    async def wait_for_completion(self, timeout: float) -> Optional[bytes]:
+        if not self.expect_completion or self.completion_future is None:
+            return self.ack_payload
+        return await asyncio.wait_for(self.completion_future, timeout=timeout)
+
+    def cancel(self):
+        if not self.ack_future.done():
+            self.ack_future.cancel()
+        if self.completion_future and not self.completion_future.done():
+            self.completion_future.cancel()
 
 
 class VISCAProtocol(CameraProtocolInterface):
@@ -343,8 +425,37 @@ class VISCAProtocol(CameraProtocolInterface):
         # VISCA command mappings
         self.command_map = self._initialize_command_map()
         
+        # Load concurrency configuration
+        visca_config = self.config.get('protocol', {}).get('visca', {})
+        self.concurrency_config = visca_config.get('concurrency', {})
+        self.concurrency_enabled = self.concurrency_config.get('enabled', False)
+        self.max_concurrent = self.concurrency_config.get('max_concurrent_operations', 5)
+        self.fallback_to_sequential = self.concurrency_config.get('fallback_to_sequential', True)
+        
+        pacing = self.concurrency_config.get('pacing_ms', {})
+        self.concurrent_pacing = pacing.get('concurrent', 10) / 1000.0
+        self.sequential_pacing = pacing.get('sequential', 20) / 1000.0
+        self.retry_delay_pacing = pacing.get('retry_delay', 5) / 1000.0
+        
+        rate_config = self.concurrency_config.get('rate_limiting', {})
+        self.rate_limit_set = rate_config.get('set_operations', True)
+        self.rate_limit_get = rate_config.get('get_operations', True)
+        max_rps = rate_config.get('max_requests_per_second', 10)
+        
+        # Initialize rate limiters
+        self.set_rate_limiter = RateLimiter(max_rps) if self.rate_limit_set else None
+        self.get_rate_limiter = RateLimiter(max_rps) if self.rate_limit_get else None
+        
+        # Semaphore for controlled concurrency
+        self.concurrency_semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        # Track failure rate for adaptive concurrency
+        self.failure_count = 0
+        self.success_count = 0
+        self.current_concurrency_limit = self.max_concurrent
+        
         # Async support
-        self.command_futures = {}  # Track pending commands by sequence number
+        self.command_futures = {}  # Track pending CommandTracker objects by sequence number
         self.datagram_protocol = None
         self.transport = None
     
@@ -377,6 +488,12 @@ class VISCAProtocol(CameraProtocolInterface):
         header = struct.pack('>HHI', msg_type, payload_length, self.sequence_number)
         
         return header + visca_payload
+    
+    def _clear_pending_sequences(self):
+        """Cancel all pending command trackers."""
+        for tracker in self.command_futures.values():
+            tracker.cancel()
+        self.command_futures.clear()
     
     def _load_config(self, config_file: str) -> Dict:
         """Load configuration from JSON file."""
@@ -714,7 +831,13 @@ class VISCAProtocol(CameraProtocolInterface):
         # Return True if at least some parameters were set successfully (not requiring ALL)
         return success_count > 0
     
-    async def _send_visca_command_async(self, cam_id: int, venue_number: int, command: bytes) -> Optional[bytes]:
+    async def _send_visca_command_async(
+        self,
+        cam_id: int,
+        venue_number: int,
+        command: bytes,
+        expect_completion: bool = False
+    ) -> Tuple[Optional[bytes], Optional[CommandTracker]]:
         """
         Send VISCA command with VISCA-IP header and receive response (async version).
         
@@ -724,51 +847,59 @@ class VISCAProtocol(CameraProtocolInterface):
             command: VISCA payload (0x81...FF)
             
         Returns:
-            VISCA payload response (header stripped) or None if failed
+            Tuple of (first response payload, CommandTracker) or (None, None) if failed
         """
         if not self.is_connected():
             print(f"VISCA not connected for camera {cam_id}")
-            return None
+            return None, None
         
         venue_number += 54
         camera_ip = f"192.168.{venue_number}.5{cam_id}"
         
         for attempt in range(self.max_attempts):
+            tracker: Optional[CommandTracker] = None
             try:
-                # Build VISCA-IP packet (header + payload)
                 packet = self._build_visca_ip_packet(command)
-                
-                # Send packet
-                self.transport.sendto(packet, (camera_ip, self.port))
-                
-                # Wait for response with timeout
                 sequence_number = struct.unpack('>I', packet[4:8])[0]
-                future = asyncio.Future()
-                self.command_futures[sequence_number] = future
-                
+                tracker = CommandTracker(sequence_number, expect_completion)
+                self.command_futures[sequence_number] = tracker
+
+                self.transport.sendto(packet, (camera_ip, self.port))
+
                 try:
-                    response = await asyncio.wait_for(future, timeout=self.timeout)
-                    
-                    # Validate VISCA response
+                    response = await tracker.wait_for_ack(self.timeout)
                     if len(response) >= 3 and response[0] == self.reply_header:
-                        return response
-                    
+                        if not expect_completion:
+                            self.command_futures.pop(sequence_number, None)
+                            return response, None
+                        return response, tracker
+
+                    print(f"VISCA: Unexpected response for camera {cam_id}: {response.hex() if response else 'None'}")
+                    self.command_futures.pop(sequence_number, None)
+                    tracker.cancel()
+
                 except asyncio.TimeoutError:
                     print(f"VISCA timeout for camera {cam_id} on attempt {attempt + 1}")
                     self.command_futures.pop(sequence_number, None)
-                
-                # Pace between attempts
+                    tracker.cancel()
+
+                if tracker.is_complete():
+                    self.command_futures.pop(sequence_number, None)
+
                 if attempt < self.max_attempts - 1:
                     await asyncio.sleep(self.v_cycle)
                 
             except Exception as e:
                 print(f"VISCA error for camera {cam_id}: {e}")
+                if tracker is not None:
+                    self.command_futures.pop(tracker.sequence_number, None)
+                    tracker.cancel()
                 if attempt < self.max_attempts - 1:
                     await asyncio.sleep(self.v_cycle)
                 else:
-                    return None
+                    return None, None
         
-        return None
+        return None, None
     
     async def _set_single_param_async(self, cam_id: int, venue_number: int, 
                                     param_name: str, value: Union[int, str]) -> bool:
@@ -785,29 +916,38 @@ class VISCAProtocol(CameraProtocolInterface):
             
             print(f"VISCA: Setting {param_name}={int_value} on camera {cam_id}")
             
-            # Send command and wait for response
-            response = await self._send_visca_command_async(cam_id, venue_number, command)
+            # Send command and wait for ACK/completion
+            response, tracker = await self._send_visca_command_async(
+                cam_id, venue_number, command, expect_completion=True
+            )
             
-            if response and len(response) >= 3:
-                # For SET commands: expect ACK (0x90 0x4z FF) then Completion (0x90 0x5z FF)
-                if response[0] == 0x90 and (response[1] & 0xF0) == 0x40:  # Got ACK
-                    # Wait for Completion
-                    try:
-                        completion = await self._wait_for_completion_async()
-                        if completion and completion[0] == 0x90 and (completion[1] & 0xF0) == 0x50:
-                            print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
-                            return True
-                        else:
-                            print(f"VISCA: Unexpected completion for {param_name}: {completion.hex() if completion else 'None'}")
-                    except Exception as e:
-                        print(f"VISCA: No completion for {param_name}: {e}")
-                elif response[0] == 0x90 and (response[1] & 0xF0) == 0x50:  # Direct completion
-                    print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
-                    return True
+            tracker_sequence = tracker.sequence_number if tracker else None
+            try:
+                if response and len(response) >= 3:
+                    # For SET commands: expect ACK (0x90 0x4z FF) then Completion (0x90 0x5z FF)
+                    if response[0] == 0x90 and (response[1] & 0xF0) == 0x40:  # Got ACK
+                        # Wait for Completion
+                        try:
+                            completion = await tracker.wait_for_completion(self.timeout) if tracker else None
+                            if completion and completion[0] == 0x90 and (completion[1] & 0xF0) == 0x50:
+                                print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
+                                return True
+                            else:
+                                print(f"VISCA: Unexpected completion for {param_name}: {completion.hex() if completion else 'None'}")
+                        except Exception as e:
+                            print(f"VISCA: No completion for {param_name}: {e}")
+                            if tracker:
+                                tracker.cancel()
+                    elif response[0] == 0x90 and (response[1] & 0xF0) == 0x50:  # Direct completion
+                        print(f"VISCA: Successfully set {param_name}={int_value} on camera {cam_id}")
+                        return True
+                    else:
+                        print(f"VISCA: Failed to set {param_name} on camera {cam_id}, response: {response.hex()}")
                 else:
-                    print(f"VISCA: Failed to set {param_name} on camera {cam_id}, response: {response.hex()}")
-            else:
-                print(f"VISCA: No response for {param_name} on camera {cam_id}")
+                    print(f"VISCA: No response for {param_name} on camera {cam_id}")
+            finally:
+                if tracker_sequence is not None:
+                    self.command_futures.pop(tracker_sequence, None)
             
             return False
             
@@ -818,23 +958,9 @@ class VISCAProtocol(CameraProtocolInterface):
             print(f"VISCA: Error setting {param_name} on camera {cam_id}: {e}")
             return False
     
-    async def _wait_for_completion_async(self) -> Optional[bytes]:
-        """Wait for completion response asynchronously."""
-        try:
-            # Wait for next response in command_futures
-            if self.command_futures:
-                # Get the first pending future
-                sequence_number, future = next(iter(self.command_futures.items()))
-                completion = await asyncio.wait_for(future, timeout=self.timeout)
-                self.command_futures.pop(sequence_number, None)
-                return completion
-        except asyncio.TimeoutError:
-            pass
-        return None
-    
-    async def get_camera_params_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+    async def _get_camera_params_uncontrolled_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
         """
-        Get current camera parameters via VISCA inquiry commands (async version).
+        Get current camera parameters via VISCA inquiry commands (uncontrolled async version).
         
         Args:
             cam_id: Camera ID (1-6)
@@ -846,7 +972,7 @@ class VISCAProtocol(CameraProtocolInterface):
         config_dict = {}
         
         # Clear any stale responses from command_futures
-        self.command_futures.clear()
+        self._clear_pending_sequences()
         
         # Create tasks for all inquiry commands
         inquiry_tasks = []
@@ -854,7 +980,7 @@ class VISCAProtocol(CameraProtocolInterface):
             if 'inquiry' in commands:
                 command = self._create_visca_packet(commands['inquiry'])
                 task = asyncio.create_task(
-                    self._send_visca_command_async(cam_id, venue_number, command)
+                    self._send_visca_command_async(cam_id, venue_number, command, expect_completion=False)
                 )
                 inquiry_tasks.append((param_name, task))
         
@@ -869,7 +995,9 @@ class VISCAProtocol(CameraProtocolInterface):
                 print(f"VISCA: Exception getting {param_name} from camera {cam_id}: {response}")
                 config_dict[param_name] = "0"
                 continue
-            
+            if isinstance(response, tuple):
+                response = response[0]
+
             if response and len(response) >= 3:
                 # Parse Sony VISCA response format: 0x90 0x50 [values] 0xFF
                 if response[0] == 0x90 and response[1] == 0x50:
@@ -898,9 +1026,9 @@ class VISCAProtocol(CameraProtocolInterface):
         
         return config_dict if config_dict else None
     
-    async def set_camera_params_async(self, cam_id: int, venue_number: int, params_dict: Dict[str, Union[int, str]]) -> bool:
+    async def _set_camera_params_uncontrolled_async(self, cam_id: int, venue_number: int, params_dict: Dict[str, Union[int, str]]) -> bool:
         """
-        Set camera parameters via VISCA commands with concurrent execution (async version).
+        Set camera parameters via VISCA commands with uncontrolled concurrent execution (async version).
         
         Args:
             cam_id: Camera ID (1-6)
@@ -937,6 +1065,172 @@ class VISCAProtocol(CameraProtocolInterface):
         
         # Return True if at least some parameters were set successfully
         return success_count > 0
+
+    async def set_camera_params_controlled_async(self, cam_id: int, venue_number: int, 
+                                                 params_dict: Dict[str, Union[int, str]]) -> bool:
+        """
+        Set camera parameters with controlled concurrency and rate limiting.
+        """
+        if not params_dict:
+            return True
+        
+        # Apply rate limiting
+        if self.rate_limit_set and self.set_rate_limiter:
+            await self.set_rate_limiter.acquire()
+        
+        # Create tasks with semaphore control
+        tasks = []
+        for param_name, value in params_dict.items():
+            if param_name in self.command_map and 'set' in self.command_map[param_name]:
+                task = asyncio.create_task(
+                    self._set_single_param_controlled_async(cam_id, venue_number, param_name, value)
+                )
+                tasks.append((param_name, task))
+        
+        if not tasks:
+            return False
+        
+        # Execute with controlled concurrency
+        results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+        
+        # Analyze results and adjust concurrency
+        success_count = sum(1 for result in results if result is True)
+        failure_count = len(results) - success_count
+        total_params = len(params_dict)
+        
+        # Update failure tracking
+        self.success_count += success_count
+        self.failure_count += failure_count
+        
+        # Adaptive concurrency adjustment
+        if self.fallback_to_sequential:
+            failure_rate = failure_count / total_params if total_params > 0 else 0
+            if failure_rate > 0.5 and self.current_concurrency_limit > 1:
+                # High failure rate - reduce concurrency
+                self.current_concurrency_limit = max(1, self.current_concurrency_limit // 2)
+                self.concurrency_semaphore = asyncio.Semaphore(self.current_concurrency_limit)
+                print(f"VISCA: Reduced concurrency to {self.current_concurrency_limit} due to failures")
+                
+                # Retry failed parameters sequentially
+                failed_params = {param_name: params_dict[param_name] 
+                               for (param_name, _), result in zip(tasks, results) if result is not True}
+                if failed_params:
+                    print(f"VISCA: Retrying {len(failed_params)} failed parameters sequentially")
+                    retry_success = await self._retry_sequential(cam_id, venue_number, failed_params)
+                    success_count += retry_success
+        
+        print(f"VISCA: Set {success_count}/{total_params} parameters successfully on camera {cam_id}")
+        return success_count > 0
+
+    async def _set_single_param_controlled_async(self, cam_id: int, venue_number: int,
+                                                 param_name: str, value: Union[int, str]) -> bool:
+        """Set single parameter with semaphore control and pacing."""
+        async with self.concurrency_semaphore:
+            # Add pacing for concurrent operations
+            if self.current_concurrency_limit > 1:
+                await asyncio.sleep(self.concurrent_pacing)
+            
+            return await self._set_single_param_async(cam_id, venue_number, param_name, value)
+
+    async def _retry_sequential(self, cam_id: int, venue_number: int, 
+                                params_dict: Dict[str, Union[int, str]]) -> int:
+        """Retry failed parameters sequentially with proper pacing."""
+        success_count = 0
+        for param_name, value in params_dict.items():
+            # Sequential pacing
+            await asyncio.sleep(self.sequential_pacing)
+            
+            result = await self._set_single_param_async(cam_id, venue_number, param_name, value)
+            if result:
+                success_count += 1
+            else:
+                # Retry delay before next parameter
+                await asyncio.sleep(self.retry_delay_pacing)
+        
+        return success_count
+
+    async def get_camera_params_controlled_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+        """
+        Get camera parameters with controlled concurrency and rate limiting.
+        """
+        # Apply rate limiting
+        if self.rate_limit_get and self.get_rate_limiter:
+            await self.get_rate_limiter.acquire()
+        
+        config_dict = {}
+        self._clear_pending_sequences()
+        
+        # Create tasks with semaphore control
+        inquiry_tasks = []
+        for param_name, commands in self.command_map.items():
+            if 'inquiry' in commands:
+                command = self._create_visca_packet(commands['inquiry'])
+                task = asyncio.create_task(
+                    self._get_single_param_controlled_async(cam_id, venue_number, command)
+                )
+                inquiry_tasks.append((param_name, task))
+        
+        # Execute with controlled concurrency
+        results = await asyncio.gather(*[task for _, task in inquiry_tasks], return_exceptions=True)
+        
+        # Process results (same parsing logic as original)
+        for (param_name, _), result in zip(inquiry_tasks, results):
+            if isinstance(result, bytes) and len(result) >= 3:
+                if result[0] == 0x90 and result[1] == 0x50:
+                    if len(result) == 4:
+                        value = result[2]
+                        config_dict[param_name] = str(value)
+                    elif len(result) == 7:
+                        p, q, r, s = result[2] & 0x0F, result[3] & 0x0F, result[4] & 0x0F, result[5] & 0x0F
+                        value = (p << 12) | (q << 8) | (r << 4) | s
+                        config_dict[param_name] = str(value)
+        
+        return config_dict if config_dict else None
+
+    async def _get_single_param_controlled_async(self, cam_id: int, venue_number: int, 
+                                                command: bytes) -> Optional[bytes]:
+        """Get single parameter with semaphore control and pacing."""
+        async with self.concurrency_semaphore:
+            # Add pacing for concurrent operations
+            if self.current_concurrency_limit > 1:
+                await asyncio.sleep(self.concurrent_pacing)
+            
+            response, _ = await self._send_visca_command_async(
+                cam_id, venue_number, command, expect_completion=False
+            )
+            return response
+
+    async def set_camera_params_async(self, cam_id: int, venue_number: int, 
+                                      params_dict: Dict[str, Union[int, str]]) -> bool:
+        """Route to controlled or uncontrolled version based on config."""
+        if self.concurrency_enabled:
+            return await self.set_camera_params_controlled_async(cam_id, venue_number, params_dict)
+        else:
+            # Use existing uncontrolled implementation
+            return await self._set_camera_params_uncontrolled_async(cam_id, venue_number, params_dict)
+
+    async def get_camera_params_async(self, cam_id: int, venue_number: int) -> Optional[Dict[str, str]]:
+        """Route to controlled or uncontrolled version based on config."""
+        if self.concurrency_enabled:
+            return await self.get_camera_params_controlled_async(cam_id, venue_number)
+        else:
+            # Use existing uncontrolled implementation
+            return await self._get_camera_params_uncontrolled_async(cam_id, venue_number)
+
+    def get_concurrency_stats(self) -> Dict[str, Any]:
+        """Get concurrency performance statistics."""
+        total_ops = self.success_count + self.failure_count
+        success_rate = self.success_count / total_ops if total_ops > 0 else 0
+        
+        return {
+            'enabled': self.concurrency_enabled,
+            'current_limit': self.current_concurrency_limit,
+            'max_limit': self.max_concurrent,
+            'success_count': self.success_count,
+            'failure_count': self.failure_count,
+            'success_rate': success_rate,
+            'rate_limiting_active': self.rate_limit_set or self.rate_limit_get
+        }
 
 
 class ProtocolFactory:
